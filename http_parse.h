@@ -88,16 +88,23 @@ typedef struct _http_req {
 
 //Static functions
 #ifdef MM_IMPLEMENT
-//Expand memory inside an http_req struct.
-static void expand_mem(http_req *res, mm_err *err) {
+//Expand memory inside an http_req struct. Makes sure the resulting expanded
+//block is at least min_sz bytes
+//NOTE: does not check if res is non-NULL
+static void expand_mem_to(http_req *res, int min_sz, mm_err *err) {
     if (*err != MM_SUCCESS) return;
     
+    //Quit early if no expansion needed
+    if (res->__internal.cap >= min_sz) return;
+    
+    //Resize the memory buffer
     char *new_base = realloc(res->__internal.base, res->__internal.cap * 2);
     if (!new_base) {
         *err = HTTP_OOM;
         return;
     }
     
+    //Update internal bookkeeping
     res->__internal.base = new_base;
     res->__internal.cap *= 2;
 }
@@ -106,10 +113,78 @@ static void expand_mem(http_req *res, mm_err *err) {
 //position for new data. If the line is empty, returns 1, otherwise 0. 
 //Returns negative on error
 static int process_line(http_req *res, mm_err *err) {
+    if (*err != MM_SUCCESS) return -1;
     
+    int line_end = res->__internal.pos;
+    
+    
+    switch(res->__internal.state) {
+    case HTTP_STATUS_LINE: {
+        break;
+    }
+    case HTTP_HDR: {
+        break;
+    }
+    case HTTP_HDR_ARGS: {
+        break;
+    }
+    case HTTP_PAYLOAD: {
+        //This function should not have been called to process payload data
+        *err = HTTP_INVALID_STATE;
+        break;
+    }
+    
+    }
+    
+    *err = HTTP_NOT_IMPL;
+    return -1;
 }
 #endif
 
+#define HTTP_REQ_INITIAL_SIZE 256
+//Returns a newly allocated (and initialized) http_req struct. Use 
+//del_http_req to properly free it. Returns NULL on error and sets the error
+http_req *new_http_req(mm_err *err) 
+#ifdef MM_IMPLEMENT
+{
+    if (*err != MM_SUCCESS) return NULL;
+    
+    http_req *ret = malloc(sizeof(http_req));
+    if (!ret) {
+        *err = HTTP_OOM;
+        return NULL;
+    }
+    
+    ret->__internal.base = malloc(HTTP_REQ_INITIAL_SIZE);
+    if (!ret->__internal.base) {
+        *err = HTTP_OOM;
+        free(ret);
+        return NULL;
+    }
+    
+    ret->__internal.state = HTTP_STATUS_LINE;
+    ret->__internal.cap = HTTP_REQ_INITIAL_SIZE;
+    ret->__internal.pos = 0;
+    ret->__internal.line = 0;
+    
+    return ret;
+}
+#else
+;
+#endif
+
+//Properly frees an http_req struct. Gracefully ignores NULL input.
+void del_http_req(http_req *h)
+#ifdef MM_IMPLEMENT
+{
+    if (h == NULL) return;
+    
+    free(h->__internal.base);
+    free(h);
+}
+#else
+;
+#endif
 
 //Returns 0 if a complete request has been seen. This indicates to the user
 //that the information in *res can now be used. Returns positive if no 
