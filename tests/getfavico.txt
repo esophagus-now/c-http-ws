@@ -1,0 +1,14 @@
+GET /favicon.ico HTTP/1.1
+Host: localhost:2345
+Connection: keep-alive
+Pragma: no-cache
+Cache-Control: no-cache
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.61 Safari/537.36
+Accept: image/webp,image/apng,image/*,*/*;q=0.8
+Sec-Fetch-Site: same-origin
+Sec-Fetch-Mode: no-cors
+Sec-Fetch-Dest: image
+Referer: http://localhost:2345/
+Accept-Encoding: gzip, deflate, br
+Accept-Language: en-US,en;q=0.9,fr-CA;q=0.8,fr;q=0.7
+

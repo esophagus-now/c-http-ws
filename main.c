@@ -24,18 +24,26 @@ int main() {
     
     mm_err err = MM_SUCCESS;
     http_req *res = new_http_req(&err);
-    int rc = supply_req_data(res, test_req, sizeof(test_req)-1, &err);
     
-    if (rc == 0) {
-        puts("Parsed a request!");
-        printf("\tMethod = %s\n", http_req_strs[res->req_type]);
-        printf("\tPath = [%s]\n", res->path);
-        int i;
-        for (i = 0; i < res->num_hdrs; i++) {
-            printf("\t\t[%s] = [%s]\n", res->hdrs[i].name, res->hdrs[i].args);
-        }
+    char buf[80];
+    int num;
+    while ((num = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
+        int rc = supply_req_data(res, buf, num, &err);
         
-        printf("\tPayload length = %d\n", res->payload_len);
+        if (rc == 0) {
+            puts("Parsed a request!");
+            printf("\tMethod = %s\n", http_req_strs[res->req_type]);
+            printf("\tPath = [%s]\n", res->path);
+            int i;
+            for (i = 0; i < res->num_hdrs; i++) {
+                printf("\t\t[%s] = [%s]\n", res->hdrs[i].name, res->hdrs[i].args);
+            }
+            
+            printf("\tPayload length = %d\n", res->payload_len);
+        } else if (rc < 0) {
+            //Error
+            break;
+        }
     }
     
     del_http_req(res);
