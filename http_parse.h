@@ -9,6 +9,10 @@
 #include <string.h>
 #include "mm_err.h"
 
+//////////////////////////
+//Error code definitions//
+//////////////////////////
+
 MM_ERR(HTTP_BAD_METHOD, "http library only accepts GET, HEAD, and POST");
 MM_ERR(HTTP_MISSING_PATH, "URI path not given in request status line");
 MM_ERR(HTTP_MISSING_PROTOCOL, "HTTP protocol not given in request status line");
@@ -26,8 +30,16 @@ MM_ERR(HTTP_INVALID_STATE, "http parser in invalid state (must reset!)");
 MM_ERR(HTTP_OOM, "out of memory");
 MM_ERR(HTTP_IMPOSSIBLE, "HTTP parsing code reached location Marco thought was impossible");
 
+//////////////
+//Parameters//
+//////////////
 
 #define HTTP_REQ_INITIAL_SIZE 256
+#define HTTP_MAX_HDRS 32
+
+////////////////////////////////////////////////////////
+//enums and "sub-structs" used in main http_req struct//
+////////////////////////////////////////////////////////
 
 #define HTTP_REQ_TYPE_IDS \
     X(HTTP_GET), \
@@ -61,7 +73,9 @@ typedef enum req_parse_state_t {
     HTTP_PAYLOAD
 } req_parse_state_t;
 
-#define HTTP_MAX_HDRS 32
+///////////////////////////////
+//Main HTTP request structure//
+///////////////////////////////
 typedef struct _http_req {
     http_req_t req_type;
     char *path;
@@ -93,8 +107,9 @@ typedef struct _http_req {
     } __internal;
 } http_req;
 
-
-//Static functions
+////////////////////
+//Static functions//
+////////////////////
 #ifdef MM_IMPLEMENT
 
 //Expand memory inside an http_req struct. Makes sure the resulting expanded
@@ -358,6 +373,9 @@ static void final_addresses(http_req *res, mm_err *err) {
 }
 #endif
 
+/////////////////////////////
+//Managing http_req_structs//
+/////////////////////////////
 
 //Resets all state in an http_req struct (but does not free any internal
 //buffers). Assumes h is non-NULL.
@@ -417,96 +435,102 @@ void del_http_req(http_req *h)
 ;
 #endif
 
-//DESCRIPTION
-//-----------
-//Uses entire buffer given by buf and len (unless an error occurs) to fill
-//the http_req structure pointed to by res. Obeys the usual behaviour 
-//regarding err (see comments in mm_err.h). The return value indicates 
-//whether a complete request was parsed, or if more data is needed.
-//
-//RETURN VALUE
-//------------
-//Returns 0 if a complete request has been seen. This indicates to the user
-//that the information in *res can now be used. Returns positive if no 
-//errors have occurred, but more data is needed to parse the request.
-//Returns negative on error, and sometimes the value has a meaning. See the
-//explanation of the HTTP_STRAGGLERS error, below.
-//
-//HTTP SYNTAX ERRORS
-//------------------
-//This function can return one of the HTTP request syntax errors, and will
-//immediately stop everything it's doing at that point. If you want to try
-//and recover, consider using reset_http_req.
-//
-//HTTP_STRAGGLERS ERROR (AND HOW TO RECOVER FROM IT)
-//--------------------------------------------------
-//This function also assumes the buffer passed in using buf and len does
-//not "straddle" two adjacent requests in memory. For example, suppose for
-//some bizarre reason you obtained the following data:
-//      ________________  ____________________
-//  ... HTTP request 1 |  | HTTP request 2 ...
-//      ----------------  --------------------
-//          ^                ^ 
-//         buf            buf+len
-//          [----------------]
-//
-//In this case, write_to_http_parser will set *err to HTTP_STRAGGLERS, and
-//will return (-1) times the number of bytes that were read from buf. 
-// -> This error is not fatal!
-//
-//In this case, write_to_http_parser DOES guarantee the http_req struct is
-//correctly filled with the data from request 1, and thus it is possible to
-//recover from this error as follows:
-//
-//
-//  //Contrived setup to illustrate the problem
-//  char *req1 = get_request_1();
-//  char *req2 = get_request_2();
-//  int total_len = strlen(req1) + strlen(req2);
-//  char *buf = malloc(total_len + 1); //"+ 1" makes room for the NUL byte
-//  strcpy(buf, req1);
-//  strcat(buf, req2);
-//
-//  //Now try parsing a request
-//  mm_err err = MM_SUCCESS;
-//  http_req *req = new_http_req(&err); //Assume this succeeds
-//  write_to_http_parser(req, buf, total_len, &err);
-//  if (err != MM_SUCCESS) {
-//      //Error happened
-//      if (err = HTTP_STRAGGLERS) {
-//          //Data in req is valid, so use it:
-//          use_parsed_req_struct(req);
-//          //Skip past data read by the parser
-//          int num_read = -rc;
-//          buf += num_read;
-//          total_len -= num_read;
-//          //Indicate that we recovered
-//          err = MM_SUCCESS;
-//          //Parse the second request (note: this invalidates old contents
-//          //of req):
-//          int rc = write_to_http_parser(req, buf, total_len, &err);
-//          if (rc < 0) {
-//              puts("We tried to recover (and we still can) but we decided"
-//                   " to give up. Sorry!");
-//              exit(1);
-//          }
-//      }
-//  }
-//  
-//  if (err == MM_SUCCESS) {
-//      use_parsed_req_struct(req);
-//  }
-//  
-//EXTRA DETAILS
-//-------------
-//If res points to a structure that was previously filled by 
-//write_to_http_parser, then res's memory will be reused. This improves 
-//performance, but it invalidates the prior contents of res.
-//
-//Speaking of performance, this function copies buf to an internally managed
-//buffer, and the text sanitization functions (only used on the header) are
-//about as expensive as a second copy. However, the payload is only copied
-//once.
+/////////////////////////
+//Parsing HTTP requests//
+/////////////////////////
+
+/* write_to_http_parser:
+
+DESCRIPTION
+-----------
+Uses entire buffer given by buf and len (unless an error occurs) to fill 
+the http_req structure pointed to by res. Obeys the usual behaviour 
+regarding err (see comments in mm_err.h). The return value indicates 
+whether a complete request was parsed, or if more data is needed.
+
+RETURN VALUE
+------------
+Returns 0 if a complete request has been seen. This indicates to the user 
+that the information in *res can now be used. Returns positive if no errors 
+have occurred, but more data is needed to parse the request. Returns 
+negative on error, and sometimes the value has a meaning. See the 
+explanation of the HTTP_STRAGGLERS error, below.
+
+HTTP SYNTAX ERRORS
+------------------
+This function can return one of the HTTP request syntax errors, and will 
+immediately stop everything it's doing at that point. If you want to try 
+and recover, consider using reset_http_req.
+
+HTTP_STRAGGLERS ERROR (AND HOW TO RECOVER FROM IT)
+--------------------------------------------------
+This function also assumes the buffer passed in using buf and len does not 
+"straddle" two adjacent requests in memory. For example, suppose for some 
+bizarre reason you obtained the following data:
+      ________________  ____________________
+  ... HTTP request 1 |  | HTTP request 2 ...
+      ----------------  --------------------
+          ^                ^ 
+         buf            buf+len
+          [----------------]
+
+In this case, write_to_http_parser will set *err to HTTP_STRAGGLERS, and 
+will return (-1) times the number of bytes that were read from buf. 
+ -> This error is not fatal!
+
+In this case, write_to_http_parser DOES guarantee the http_req struct is 
+correctly filled with the data from request 1, and thus it is possible to 
+recover from this error as follows:
+
+  //Contrived setup to illustrate the problem
+  char *req1 = get_request_1();
+  char *req2 = get_request_2();
+  int total_len = strlen(req1) + strlen(req2);
+  char *buf = malloc(total_len + 1); //"+ 1" makes room for the NUL byte
+  strcpy(buf, req1);
+  strcat(buf, req2);
+
+  //Now try parsing a request
+  mm_err err = MM_SUCCESS;
+  http_req *req = new_http_req(&err); //Assume this succeeds
+  write_to_http_parser(req, buf, total_len, &err);
+  if (err != MM_SUCCESS) {
+      //Error happened
+      if (err = HTTP_STRAGGLERS) {
+          //Data in req is valid, so use it:
+          use_parsed_req_struct(req);
+          //Skip past data read by the parser
+          int num_read = -rc;
+          buf += num_read;
+          total_len -= num_read;
+          //Indicate that we recovered
+          err = MM_SUCCESS;
+          //Parse the second request (note: this invalidates old contents
+          //of req):
+          int rc = write_to_http_parser(req, buf, total_len, &err);
+          if (rc < 0) {
+              puts("We tried to recover (and we still can) but we decided"
+                   " to give up. Sorry!");
+              exit(1);
+          }
+      }
+  }
+  
+  if (err == MM_SUCCESS) {
+      use_parsed_req_struct(req);
+  }
+  
+EXTRA DETAILS
+-------------
+If res points to a structure that was previously filled by 
+write_to_http_parser, then res's memory will be reused. This improves 
+performance, but it invalidates the prior contents of res.
+
+Speaking of performance, this function copies buf to an internally managed 
+buffer, and the text sanitization functions (only used on the header) are 
+about as expensive as a second copy. However, the payload is only copied 
+once.
+*/
 int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
 #ifdef MM_IMPLEMENT
 {
@@ -551,44 +575,44 @@ int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
                 //Error occurred
                 return rc;
             } else if (rc == 0) {
-                //The line has been read, but it was not empty
+                //The entire line has been read, but it was not empty
                 continue;
+            }
+            //The line was empty. This means the header is finished
+            if (res->__internal.state == HTTP_PAYLOAD) {
+                //Make sure there's enough room for the payload
+                expand_mem_to(res, res->__internal.pos + res->payload_len, err);
+                if (*err != MM_SUCCESS) return -1;
+                
+                //This is our tricky hack of only storing the offset until
+                //we're completely sure no more realloc()s will happen
+                res->payload = (char *) ((unsigned long)res->__internal.pos);
+                
+                //TODO: finish implementing support for reading payloads
+                *err = HTTP_NOT_IMPL;
+                return -1;
             } else {
-                //The line was empty. This means the header is finished
-                if (res->__internal.state == HTTP_PAYLOAD) {
-                    //Make sure there's enough room for the payload
-                    expand_mem_to(res, res->__internal.pos + res->payload_len, err);
-                    if (*err != MM_SUCCESS) return -1;
-                    
-                    //This is our tricky hack of only storing the offset 
-                    //until we're completely sure no more realloc()s will
-                    //happen
-                    res->payload = (char *) ((unsigned long)res->__internal.pos);
-                    
-                    //But as of now we don't completely support payloads
-                    *err = HTTP_NOT_IMPL;
-                    return -1;
-                } else {
-                    //This means there is no payload and we can just return
-                    //the filled struct
-                    
-                    //Finalize addresses
-                    final_addresses(res, err);
-                    if (*err != MM_SUCCESS) return -1;
-                    
-                    //Finally, make sure that there are no stragglers:
-                    if (rd_pos < len - 1) {
-                        *err = HTTP_STRAGGLERS;
-                        return -1;
-                    }
-                    return 0; //Done!
+                //This means there is no payload and we can just return
+                //the filled struct
+                
+                //Finalize addresses
+                final_addresses(res, err);
+                if (*err != MM_SUCCESS) return -1;
+                
+                //Finally, make sure that there are no stragglers:
+                if (rd_pos < len - 1) {
+                    *err = HTTP_STRAGGLERS;
+                    return -rd_pos;
                 }
+                return 0; //Done!
+            }
             }
         } else {
             req_mem[(*wr_pos)++] = buf[rd_pos++];
         }
     }
     
+    //Entire buffer was read, but a complete request has not yet been seen.
     return 1;
 }
 #else
