@@ -28,6 +28,14 @@ int main() {
     
     if (rc == 0) {
         puts("Parsed a request!");
+        printf("\tMethod = %s\n", http_req_strs[res->req_type]);
+        printf("\tPath = [%s]\n", res->path);
+        int i;
+        for (i = 0; i < res->num_hdrs; i++) {
+            printf("\t\t[%s] = [%s]\n", res->hdrs[i].name, res->hdrs[i].args);
+        }
+        
+        printf("\tPayload length = %d\n", res->payload_len);
     }
     
     del_http_req(res);

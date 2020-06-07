@@ -35,6 +35,7 @@ MM_ERR(HTTP_BAD_HDR, "HTTP header has bad syntax");
 MM_ERR(HTTP_CONTENT_LENGTH_UNSPECIFIED, "HTTP Content-Length unspecified");
 MM_ERR(HTTP_CHUNKED_NOT_SUPPORTED, "this server does not support chunked transfers");
 MM_ERR(HTTP_INVALID_CONTENT_LENGTH, "invalid argument for Content-Length");
+MM_ERR(HTTP_STRAGGLERS, "leftover bytes in user buf have been lost");
 MM_ERR(HTTP_NOT_IMPL, "function not implemented");
 MM_ERR(HTTP_NULL_ARG, "NULL argument given but non-NULL expected");
 MM_ERR(HTTP_INVALID_ARG, "invalid argument");
@@ -42,11 +43,26 @@ MM_ERR(HTTP_INVALID_STATE, "http parser in invalid state (must reset!)");
 MM_ERR(HTTP_OOM, "out of memory");
 MM_ERR(HTTP_IMPOSSIBLE, "HTTP parsing code reached location Marco thought was impossible");
 
+#define HTTP_REQ_TYPE_IDS \
+    X(HTTP_GET), \
+    X(HTTP_POST), \
+    X(HTTP_HEAD)
+
 typedef enum _http_req_t {
-    HTTP_GET,
-    HTTP_POST,
-    HTTP_HEAD
+#define X(x) x
+    HTTP_REQ_TYPE_IDS
+#undef X
 } http_req_t;
+
+#ifdef MM_IMPLEMENT
+#define X(x) #x
+char const *const http_req_strs[] = {
+    HTTP_REQ_TYPE_IDS
+};
+#undef X
+#else
+extern char const *const http_req_strs[];
+#endif
 
 typedef struct _http_hdr {
     char *name; //Always converted to lower-case
@@ -79,9 +95,9 @@ typedef struct _http_req {
         //Saved memory
         char *base;
         //Next write location in base
-        int pos;
+        unsigned pos;
         //Number of (total) bytes allocated in base
-        int cap;
+        unsigned cap;
         
         //To (significantly) simplify parsing code, we will process text 
         //line-by-line. This index keeps track of the beginning of the
@@ -158,6 +174,9 @@ static int scrunch_args(char *line) {
             }
         }
         
+        //Write comma to args mem
+        line[wr_pos++] = line[rd_pos++];
+        
         //Skip whitespace
         while (line[rd_pos] == ' ' || line[rd_pos] == '\t') rd_pos++;
     }
@@ -172,6 +191,9 @@ static int scrunch_args(char *line) {
 //
 //EXTRA DETAILS: the caller (i.e. supply_req_data) must process the input
 //string to 1) remove carriage returns and 2) convert line feeds to NULs.
+//Also, the pointers this saves are actually offsets from __internal.base.
+//After a complete http_req struct is read, you have to run final_addresses
+//on it
 static int process_line(http_req *res, mm_err *err) {
     if (*err != MM_SUCCESS) return -1;
     
@@ -182,19 +204,21 @@ static int process_line(http_req *res, mm_err *err) {
     case HTTP_STATUS_LINE: {
         //Start by reading the request type
         //Not efficient, but who cares?
+        int reqtype_len;
         if (strncmp("GET ", line, 4) == 0) {
             res->req_type = HTTP_GET;
-            line += 4;
+            reqtype_len = 4;
         } else if (strncmp("HEAD ", line, 5) == 0) {
             res->req_type = HTTP_HEAD;
-            line += 5;
+            reqtype_len = 5;
         } else if (strncmp("POST ", line, 5) == 0) {
             res->req_type = HTTP_POST;
-            line += 5;
+            reqtype_len = 5;
         } else {
             *err = HTTP_BAD_METHOD;
             return -1;
         }
+        line += reqtype_len;
         
         skip_ws(&line);
         //Next get the path
@@ -221,14 +245,17 @@ static int process_line(http_req *res, mm_err *err) {
         }
         //I'm taking a little shortcut here: no one ever has spaces inside
         //their "HTTP/1.0" or "HTTP/1.1" string
-        if (strncmp("HTTP/1.0", line, 8) || strncmp("HTTP/1.1", line, 8)) {
+        if (strncmp("HTTP/1.0", line, 8) && strncmp("HTTP/1.1", line, 8)) {
             *err = HTTP_BAD_PROTOCOL;
             return -1;
         }
         //Laziness: don't bother checking if there is extra garbage on this line
         
+        //Move up the beginning-of-line indicator to just past the path
+        res->__internal.line += reqtype_len + path_len + 1;
+        //Also ask the data reader function to write at this location
+        res->__internal.pos = res->__internal.line;
         res->__internal.state = HTTP_HDR;
-        res->__internal.pos = res->__internal.line; //We can reuse this memory
         return 0;
     }
     case HTTP_HDR: {
@@ -293,8 +320,9 @@ static int process_line(http_req *res, mm_err *err) {
         http_hdr *hdr = res->hdrs + res->num_hdrs++;
         hdr->name = hdr_str - (unsigned long) res->__internal.base;
         hdr->args = args_str - (unsigned long) res->__internal.base;
-        //Make sure pos points to one after the end
-        res->__internal.pos = res->__internal.line + hdr_len + args_len + 1;
+        //Make sure line and pos point to one after the end
+        res->__internal.line += hdr_len + args_len + 1;
+        res->__internal.pos = res->__internal.line;
         
         //As a last step, look for headers used for parsing payload
         if (strcmp("Content-Length", hdr_str) == 0) {
@@ -323,6 +351,30 @@ static int process_line(http_req *res, mm_err *err) {
     
     *err = HTTP_NOT_IMPL;
     return -1;
+}
+
+//When building an http_req struct, the pointers are actually offsets from
+//__internal.base, because sometimes we will realloc() it. However, once a
+//struct is filled, no more realloc()s will happen, and now we add the base
+//to all pointers
+static void final_addresses(http_req *res, mm_err *err) {
+    unsigned long base = (unsigned long) res->__internal.base;
+    
+    if (res->num_hdrs < 0 || res->num_hdrs >= HTTP_MAX_HDRS) {
+        *err = HTTP_INVALID_ARG;
+        return;
+    }
+    
+    res->path += base;
+    res->payload += base;
+    
+    int i;
+    for (i = 0; i < res->num_hdrs; i++) {
+        res->hdrs[i].name += base;
+        res->hdrs[i].args += base;
+    }
+    
+    return;
 }
 #endif
 
@@ -398,7 +450,6 @@ int supply_req_data(http_req *res, char *buf, int len, mm_err *err)
     expand_mem_to(res, res->__internal.pos + len, err);
     if (*err != MM_SUCCESS) return -1;
     
-    //RETURN ADDRESS (i.e. where I was last editing before stopping)
     //Wait... sometimes we're just copying in the payload, so we shouldn't
     //do the header processing. And also, what if the data in the buffer
     //inludes payload data and some data for a new header?
@@ -408,27 +459,59 @@ int supply_req_data(http_req *res, char *buf, int len, mm_err *err)
     //calls to process_line when lines are scanned in
     int rd_pos = 0;
     char *req_mem = res->__internal.base; //For convenience
-    int *pos = &res->__internal.pos; //For convenience
+    unsigned *wr_pos = &res->__internal.pos; //For convenience
     while (rd_pos < len) {
         if (buf[rd_pos] == '\r') {
             rd_pos++;
             continue;
         } else if (buf[rd_pos] == '\n') {
-            req_mem[(*pos)++] = '\0';
+            req_mem[(*wr_pos)++] = '\0'; 
+            rd_pos++;
             
             int rc = process_line(res, err);
             if (rc < 0) {
+                //Error occurred
                 return rc;
             } else if (rc == 0) {
+                //The line has been read, but it was not empty
                 continue;
             } else {
-                
+                //The line was empty. This means the header is finished
+                if (res->__internal.state == HTTP_PAYLOAD) {
+                    //Make sure there's enough room for the payload
+                    expand_mem_to(res, res->__internal.pos + res->payload_len, err);
+                    if (*err != MM_SUCCESS) return -1;
+                    
+                    //This is our tricky hack of only storing the offset 
+                    //until we're completely sure no more realloc()s will
+                    //happen
+                    res->payload = (char *) ((unsigned long)res->__internal.pos);
+                    
+                    //But as of now we don't completely support payloads
+                    *err = HTTP_NOT_IMPL;
+                    return -1;
+                } else {
+                    //This means there is no payload and we can just return
+                    //the filled struct
+                    //First, make sure that there are no stragglers:
+                    if (rd_pos < len - 1) {
+                        *err = HTTP_STRAGGLERS;
+                        return -1;
+                    }
+                    
+                    //Finalize addresses
+                    final_addresses(res, err);
+                    if (*err != MM_SUCCESS) return -1;
+                    
+                    return 0; //Done!
+                }
             }
+        } else {
+            req_mem[(*wr_pos)++] = buf[rd_pos++];
         }
     }
     
-    *err = HTTP_NOT_IMPL;
-    return -1;
+    return 1;
 }
 #else
 ;
