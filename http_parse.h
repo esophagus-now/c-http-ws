@@ -69,7 +69,7 @@ MM_ERR(HTTP_IMPOSSIBLE, "HTTP parsing code reached location Marco thought was im
 //Parameters//
 //////////////
 
-#define HTTP_REQ_INITIAL_SIZE 256
+#define HTTP_REQ_INITIAL_SIZE 257
 #define HTTP_MAX_HDRS 32
 
 ////////////////////////////////////////////////////////
@@ -204,8 +204,11 @@ static int scrunch_args(char *line) {
             }
         }
         
-        //Write comma to args mem
-        line[wr_pos++] = line[rd_pos++];
+        //Terminate this arg, whether that be with a comma or a NUL
+        line[wr_pos++] = line[rd_pos];
+        
+        //Quit early if encountered end of string
+        if (!line[rd_pos++]) break;
         
         //Skip whitespace
         while (line[rd_pos] == ' ' || line[rd_pos] == '\t') rd_pos++;
