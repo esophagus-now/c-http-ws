@@ -28,7 +28,7 @@ int main() {
     char buf[80];
     int num;
     while ((num = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
-        int rc = supply_req_data(res, buf, num, &err);
+        int rc = write_to_http_parser(res, buf, num, &err);
         
         if (rc == 0) {
             puts("Parsed a request!");
@@ -40,6 +40,7 @@ int main() {
             }
             
             printf("\tPayload length = %d\n", res->payload_len);
+            fflush(stdout);
         } else if (rc < 0) {
             //Error
             break;
