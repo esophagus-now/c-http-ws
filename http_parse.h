@@ -1,13 +1,47 @@
-#ifndef HTTP_PARSE_H
-#define HTTP_PARSE_H 1
-
 //Credit to https://www.jmarshall.com/easy/http/ who does a great job of
 //explaining HTTP. MDN and the RFCs are needlessly overcomplicated.
+
+//There's a special place in hell for preprocessor sinners like me...
+//This is my way of doing "#pragma once"
+#ifdef MM_IMPLEMENT
+    #ifndef HTTP_PARSE_H_IMPLEMENTED
+        #define SHOULD_INCLUDE 1
+        #define HTTP_PARSE_H_IMPLEMENTED 1
+    #else 
+        #define SHOULD_INCLUDE 0
+    #endif
+#else
+    #ifndef HTTP_PARSE_H
+        #define SHOULD_INCLUDE 1
+        #define HTTP_PARSE_H 1
+    #else
+        #define SHOULD_INCLUDE 0
+    #endif
+#endif
+
+#if SHOULD_INCLUDE
+#undef SHOULD_INCLUDE //Don't accidentally mess up other header files
+
+//Unforgivable preprocessor shenanigans! There must be a cleaner way to do
+//this! This makes sure the implemented version of a file can still use the
+//"header" versions of itself
+#ifdef MM_IMPLEMENT
+    #undef MM_IMPLEMENT
+    #include "http_parse.h"
+    #define MM_IMPLEMENT
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "mm_err.h"
+
+#ifdef MM_IMPLEMENT
+#warning including http_parse.h in implement mode
+#else
+#warning including http_parse.h in header mode
+#endif
+
 
 //////////////////////////
 //Error code definitions//
@@ -27,6 +61,7 @@ MM_ERR(HTTP_NOT_IMPL, "function not implemented");
 MM_ERR(HTTP_NULL_ARG, "NULL argument given but non-NULL expected");
 MM_ERR(HTTP_INVALID_ARG, "invalid argument");
 MM_ERR(HTTP_INVALID_STATE, "http parser in invalid state (must reset!)");
+MM_ERR(HTTP_NOT_FOUND, "not found");
 MM_ERR(HTTP_OOM, "out of memory");
 MM_ERR(HTTP_IMPOSSIBLE, "HTTP parsing code reached location Marco thought was impossible");
 
@@ -46,66 +81,69 @@ MM_ERR(HTTP_IMPOSSIBLE, "HTTP parsing code reached location Marco thought was im
     X(HTTP_POST), \
     X(HTTP_HEAD)
 
-typedef enum _http_req_t {
-#define X(x) x
-    HTTP_REQ_TYPE_IDS
-#undef X
-} http_req_t;
+#ifndef MM_IMPLEMENT
+    typedef enum _http_req_t {
+    #define X(x) x
+        HTTP_REQ_TYPE_IDS
+    #undef X
+    } http_req_t;
+    
+    typedef struct _http_hdr {
+        char *name; //Always converted to lower-case
+        char *args; //Can use strtok with "," as delimiter to iterate through
+    } http_hdr;
 
-#ifdef MM_IMPLEMENT
-#define X(x) #x
-char const *const http_req_strs[] = {
-    HTTP_REQ_TYPE_IDS
-};
-#undef X
+    typedef enum req_parse_state_t {
+        HTTP_STATUS_LINE,
+        HTTP_HDR,
+        HTTP_PAYLOAD
+    } req_parse_state_t;
+    
+    extern char const *const http_req_strs[];
 #else
-extern char const *const http_req_strs[];
+    #define X(x) #x
+    char const *const http_req_strs[] = {
+        HTTP_REQ_TYPE_IDS
+    };
+    #undef X
 #endif
 
-typedef struct _http_hdr {
-    char *name; //Always converted to lower-case
-    char *args; //Can use strtok with "," as delimiter to iterate through
-} http_hdr;
-
-typedef enum req_parse_state_t {
-    HTTP_STATUS_LINE,
-    HTTP_HDR,
-    HTTP_PAYLOAD
-} req_parse_state_t;
 
 ///////////////////////////////
 //Main HTTP request structure//
 ///////////////////////////////
-typedef struct _http_req {
-    http_req_t req_type;
-    char *path;
-    int num_hdrs;
-    http_hdr hdrs[HTTP_MAX_HDRS];
-    
-    int cnx_closed;
-    
-    int payload_len;
-    char *payload;
-    
-    //Internal fields. Don't touch!
-    struct {
-        //Parser state
-        req_parse_state_t state;
+#ifndef MM_IMPLEMENT
+    typedef struct _http_req {
+        http_req_t req_type;
+        char *path;
+        int num_hdrs;
+        http_hdr hdrs[HTTP_MAX_HDRS];
         
-        //Saved memory
-        char *base;
-        //Next write location in base
-        unsigned pos;
-        //Number of (total) bytes allocated in base
-        unsigned cap;
+        int cnx_closed;
         
-        //To (significantly) simplify parsing code, we will process text 
-        //line-by-line. This index keeps track of the beginning of the
-        //current line (for example, if we need to read() more bytes to get
-        //to the end)
-        int line;
-    } __internal;
-} http_req;
+        int payload_len;
+        char *payload;
+        
+        //Internal fields. Don't touch!
+        struct {
+            //Parser state
+            req_parse_state_t state;
+            
+            //Saved memory
+            char *base;
+            //Next write location in base
+            unsigned pos;
+            //Number of (total) bytes allocated in base
+            unsigned cap;
+            
+            //To (significantly) simplify parsing code, we will process text 
+            //line-by-line. This index keeps track of the beginning of the
+            //current line (for example, if we need to read() more bytes to get
+            //to the end)
+            int line;
+        } __internal;
+    } http_req;
+#endif
 
 ////////////////////
 //Static functions//
@@ -377,21 +415,6 @@ static void final_addresses(http_req *res, mm_err *err) {
 //Managing http_req_structs//
 /////////////////////////////
 
-//Resets all state in an http_req struct (but does not free any internal
-//buffers). Assumes h is non-NULL.
-void reset_http_req(http_req *h) 
-#ifdef MM_IMPLEMENT
-{
-    h->num_hdrs = 0;
-    h->payload_len = -1;
-    h->__internal.state = HTTP_STATUS_LINE;
-    h->__internal.pos = 0;
-    h->__internal.line = 0;
-}
-#else
-;
-#endif
-
 //Returns a newly allocated (and initialized) http_req struct. Use 
 //del_http_req to properly free it. Returns NULL on error and sets the error
 http_req *new_http_req(mm_err *err) 
@@ -417,6 +440,21 @@ http_req *new_http_req(mm_err *err)
     reset_http_req(ret);
     
     return ret;
+}
+#else
+;
+#endif
+
+//Resets all state in an http_req struct (but does not free any internal
+//buffers). Assumes h is non-NULL.
+void reset_http_req(http_req *h) 
+#ifdef MM_IMPLEMENT
+{
+    h->num_hdrs = 0;
+    h->payload_len = -1;
+    h->__internal.state = HTTP_STATUS_LINE;
+    h->__internal.pos = 0;
+    h->__internal.line = 0;
 }
 #else
 ;
@@ -564,9 +602,11 @@ int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
     unsigned *wr_pos = &res->__internal.pos; //For convenience
     while (rd_pos < len) {
         if (buf[rd_pos] == '\r') {
+            //Skip this character
             rd_pos++;
             continue;
         } else if (buf[rd_pos] == '\n') {
+            //Terminate the line and feed to process_line
             req_mem[(*wr_pos)++] = '\0'; 
             rd_pos++;
             
@@ -606,7 +646,6 @@ int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
                 }
                 return 0; //Done!
             }
-            }
         } else {
             req_mem[(*wr_pos)++] = buf[rd_pos++];
         }
@@ -619,4 +658,45 @@ int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
 ;
 #endif
 
+/////////////////////////////////
+//Working with http_req structs//
+/////////////////////////////////
+
+//Return pointer to args given header name, or NULL on error
+char *get_args(http_req const* req, char const *hdr_name, mm_err *err) 
+#ifdef MM_IMPLEMENT
+{
+    if (*err != MM_SUCCESS) return NULL;
+    
+    //Sanity-check inputs
+    if (req == NULL || hdr_name == NULL) {
+        *err = HTTP_NULL_ARG;
+        return NULL;
+    }
+    if (req->num_hdrs < 0 || req->num_hdrs >= HTTP_MAX_HDRS) {
+        *err = HTTP_INVALID_ARG;
+        return NULL;
+    }
+    
+    //Just do a dumb linear search
+    char *found = NULL;
+    int i;
+    for (i = 0; i < req->num_hdrs; i++) {
+        if (strcmp(req->hdrs[i].name, hdr_name) == 0) {
+            found = req->hdrs[i].args;
+            break;
+        }
+    }
+    
+    if (found == NULL) *err = HTTP_NOT_FOUND;
+    
+    return found;
+}
+#else
+;
+#endif
+
+
+#else
+    #undef SHOULD_INCLUDE
 #endif

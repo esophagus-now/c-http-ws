@@ -1,6 +1,3 @@
-#ifndef MM_ERR_H 
-#define MM_ERR_H 1
-
 /***************/
 /**How to use:**/
 /***************/
@@ -150,7 +147,26 @@ As a library-writer, you should expect the user to create the file which
 defines MM_IMPLEMENT and includes your header (my_lib.h).
 */
 
-typedef char const *mm_err;
+
+//Special case for mm_err.h only: the following defines should always be
+//made (in other words, #pragma once is not the indended behaviour)
+
+//Very ugly preprocessor hack... there must be a cleaner way to do this!
+//This makes sure that the "header version" of mm_err.h eventually gets
+//included somewhere
+#ifdef MM_IMPLEMENT
+#undef MM_IMPLEMENT
+#include "mm_err.h"
+#define MM_IMPLEMENT
+#endif
+
+//Gets rid of (harmless) preprocessor warnings
+#ifdef MM_ERR
+#undef MM_ERR
+#endif
+#ifdef EXTERN_FIX
+#undef EXTERN_FIX
+#endif
 
 #ifdef __cplusplus
 #define EXTERN_FIX extern
@@ -159,11 +175,47 @@ typedef char const *mm_err;
 #endif
 
 #ifdef MM_IMPLEMENT
+#warning Defining MM_ERR in implement mode
 #define MM_ERR(name, val) EXTERN_FIX mm_err const name = val
 #else
+#warning Defining MM_ERR in header mode
 #define MM_ERR(name, val) extern mm_err const name
+#endif
+
+
+
+//This is my way of doing "#pragma once"
+#ifdef MM_IMPLEMENT
+    #ifndef MM_ERR_H_IMPLEMENTED
+        #define SHOULD_INCLUDE 1
+        #define MM_ERR_H_IMPLEMENTED 1
+    #else 
+        #define SHOULD_INCLUDE 0
+    #endif
+#else
+    #ifndef MM_ERR_H
+        #define SHOULD_INCLUDE 1
+        #define MM_ERR_H 1
+    #else
+        #define SHOULD_INCLUDE 0
+    #endif
+#endif
+
+#if SHOULD_INCLUDE
+#undef SHOULD_INCLUDE //Don't accidentally mess up other header files
+
+#ifdef MM_IMPLEMENT
+#warning including mm_err.h in implement mode
+#else
+#warning including mm_err.h in header mode
+#endif
+
+#ifndef MM_IMPLEMENT
+typedef char const *mm_err;
 #endif
 
 MM_ERR(MM_SUCCESS, "success");
 
+#else
+    #undef SHOULD_INCLUDE
 #endif
