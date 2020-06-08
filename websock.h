@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <openssl/sha.h>
+#include <endian.h> //UGHHH endianness...
 #include "mm_err.h"
 #include "http_parse.h"
 
@@ -64,9 +65,6 @@
         (sizeof(WEBSOCK_SUBPROTOCOL_HDR)-1) + \
         WEBSOCK_MAX_PROTOCOL_LEN + \
         4) //For CRLF and empty line at end of header
-    
-    //From the standard
-    #define WEBSOCK_HDR_SIZE 14
 #endif
 
 /////////////////
@@ -79,6 +77,7 @@
 MM_ERR(WEBSOCK_NOT_WEBSOCKET, "not a websocket request header");
 MM_ERR(WEBSOCK_PROT_TOO_LONG, "protocol string too long (max = " xstr(WEBSOCK_MAX_PROTOCOL_LEN) ")");
 MM_ERR(WEBSOCK_NULL_ARG, "NULL argument where non-NULL expected");
+MM_ERR(WEBSOCK_BAD_OPCODE, "unsupported websocket opcode");
 MM_ERR(WEBSOCK_STRAGGLERS, "leftover bytes in user buffer have been ignored");
 MM_ERR(WEBSOCK_INVALID_ARG, "invalid argument");
 MM_ERR(WEBSOCK_NOT_IMPL, "not implemented");
@@ -106,7 +105,8 @@ MM_ERR(WEBSOCK_OOM, "out of memory");
         X(WEBSOCK_PAYLOAD)
         
     typedef enum _websock_parse_state_t {
-        WEBSOCK_HDR,
+        WEBSOCK_HDR_FIRST_TWO_BYTES, //God websockets is such a pain
+        WEBSOCK_REST_OF_HDR,
         WEBSOCK_PAYLOAD
     } websock_parse_state_t;
     
@@ -137,7 +137,7 @@ MM_ERR(WEBSOCK_OOM, "out of memory");
 ///////////////////////////////////
 #ifndef MM_IMPLEMENT
     typedef struct _websock_pkt {
-        websock_pkt_type_t pkt_type;
+        websock_pkt_type_t type;
         int fin;
         unsigned long payload_len;
         char *payload;
@@ -147,6 +147,8 @@ MM_ERR(WEBSOCK_OOM, "out of memory");
             char *base;
             int pos;
             int cap;
+            int hdr_len;
+            char mask[4];
         } __internal;
     } websock_pkt;
 #endif
@@ -175,6 +177,8 @@ websock_pkt *new_websock_pkt(mm_err *err)
         return NULL;
     }
     
+    ret->__internal.base = base;
+    
     reset_websock_pkt(ret);
     
     return ret;    
@@ -188,7 +192,7 @@ websock_pkt *new_websock_pkt(mm_err *err)
 void reset_websock_pkt(websock_pkt *pkt) 
 #ifdef MM_IMPLEMENT
 {
-    pkt->__internal.state = WEBSOCK_HDR;
+    pkt->__internal.state = WEBSOCK_HDR_FIRST_TWO_BYTES;
     pkt->__internal.pos = 0;
     pkt->payload_len = -1;
 }
@@ -237,6 +241,89 @@ static void expand_pkt_mem_to(websock_pkt *pkt, int min_sz, mm_err *err) {
     //Update internal bookkeeping
     pkt->__internal.base = new_base;
     pkt->__internal.cap *= 2;
+}
+
+//What a pain! Why does websockets have such an inconvenient length format?
+static void process_websock_hdr_length(websock_pkt *pkt, mm_err *err) {
+    if (*err != MM_SUCCESS) return;
+    
+    //Sanity-check inputs
+    if (!pkt) {
+        *err = WEBSOCK_NULL_ARG;
+        return;
+    }
+    
+    char length_code = pkt->__internal.base[1] & 0xFF;
+    
+    switch (length_code) {
+        case 126:
+            pkt->__internal.hdr_len = 8;
+            break;
+        case 127:
+            pkt->__internal.hdr_len = 14;
+            break;
+        default:
+            pkt->__internal.hdr_len = 6;
+            pkt->payload_len = length_code;
+            break;
+    }
+    
+    //Update parse state
+    pkt->__internal.state = WEBSOCK_REST_OF_HDR;
+}
+
+//Given a buffer of WEBSOCK_HDR_SIZE bytes, fill the websock_pkt struct with
+//the proper fields. 
+static void process_websock_hdr(websock_pkt *pkt, mm_err *err) {
+    if (*err != MM_SUCCESS) return;
+    
+    //Sanity-check inputs
+    if (!pkt) {
+        *err = WEBSOCK_NULL_ARG;
+        return;
+    }
+    
+    char const *hdr = pkt->__internal.base; //For convenience
+    
+    //FIN bit
+    pkt->fin = hdr[0] >> 7;
+    
+    //Opcode
+    int opcode = hdr[0] & 0xF;
+    
+    if (websock_pkt_type_strs[opcode] == websock_badop) {
+        *err = WEBSOCK_BAD_OPCODE;
+        return;
+    }
+    
+    pkt->type = (websock_pkt_type_t) opcode;
+    
+    //Length
+    //Why is websockets so complicated?
+    unsigned long len = hdr[1] & 0x7F;
+    hdr += 2;
+    
+    if (len == 126) {
+        len = be16toh(*(unsigned short*)(hdr));
+        hdr += 2;
+    } else if (len == 127) {
+        len = be64toh(*(unsigned short*)(hdr));
+        hdr += 8;
+    }
+    
+    pkt->payload_len = len;
+    
+    //Masking key
+    pkt->__internal.mask[0] = hdr[0];
+    pkt->__internal.mask[1] = hdr[1];
+    pkt->__internal.mask[2] = hdr[2];
+    pkt->__internal.mask[3] = hdr[3];
+    
+    //Update internal parse state of packet
+    pkt->__internal.state = WEBSOCK_PAYLOAD;
+    pkt->__internal.pos = 0;
+    
+    return;
 }
 
 #endif
@@ -395,8 +482,6 @@ int write_to_websock_parser(websock_pkt *pkt, char const *buf, int len, mm_err *
         return -1;
     }
     
-    //TODO: Figure out when to call reset_pkt
-    
     //Make sure internal buffer has enough room for this new input
     expand_pkt_mem_to(pkt, pkt->__internal.pos + len, err);
     if (*err != MM_SUCCESS) return -1;
@@ -406,32 +491,58 @@ int write_to_websock_parser(websock_pkt *pkt, char const *buf, int len, mm_err *
     
     int rd_pos = 0;
     
-    if (pkt->__internal.state == WEBSOCK_HDR) {
-        while (rd_pos < len && (*pos) < WEBSOCK_HDR_SIZE) {
+    //Damn! Now for the third time: why is websockets so complicated??? The
+    //header size is variable! What a headache!
+    if (pkt->__internal.state == WEBSOCK_HDR_FIRST_TWO_BYTES) {
+        while (rd_pos < len && (*pos) < 2) {
             base[(*pos)++] = buf[rd_pos++];
         }
         
-        if (*pos == WEBSOCK_HDR_SIZE) {
-            //Done reading header. Call process_hdr and move on
+        if (*pos == 2) {
+            process_websock_hdr_length(pkt, err);
+            if (*err != MM_SUCCESS) return -1;
         }
     }
     
-    //This should NOT!!!! be an else if
+    //This is deliberately NOT an else if
+    if (pkt->__internal.state == WEBSOCK_REST_OF_HDR) {
+        while (rd_pos < len && (*pos) < pkt->__internal.hdr_len) {
+            base[(*pos)++] = buf[rd_pos++];
+        }
+        
+        if (*pos == pkt->__internal.hdr_len) {
+            process_websock_hdr(pkt, err);
+            if (*err != MM_SUCCESS) return -1;
+        }
+    }
+    
+    //This is deliberately NOT an else if
     if (pkt->__internal.state == WEBSOCK_PAYLOAD) {
         while (rd_pos < len && (*pos) < pkt->payload_len) {
-            base[(*pos)++] = buf[rd_pos++];
+            base[*pos] = buf[rd_pos++] ^ pkt->__internal.mask[(*pos)&0x3]; //Unmask payload (why does websockets have this?)
+            (*pos)++;
         }
         
         if (*pos == pkt->payload_len) {
-            //Done reading payload. Check for stragglers, then return
+            //Done reading payload. Make sure user-facing fields are in order
+            pkt->payload = pkt->__internal.base;
+            
+            //Reset pos and parse state in case user wants to reuse this 
+            //struct
+            pkt->__internal.pos = 0;
+            pkt->__internal.state = WEBSOCK_HDR_FIRST_TWO_BYTES;
+            
+            //Check for stragglers, then return
+            if (rd_pos != len) {
+                *err = WEBSOCK_STRAGGLERS;
+                return -rd_pos;
+            }
+            
+            return 0; //Done reading packet
         }
     }
     
-    //RETURN ADDRESS (i.e. where I was editing before I stepped away)
-    
-    //Not completely done yet...
-    *err = WEBSOCK_NOT_IMPL;
-    return -1;
+    return 1; //No error, but not done
 }
 #else
 ;
