@@ -55,9 +55,9 @@
     #define WEBSOCK_SUBPROTOCOL_HDR \
         "Sec-WebSocket-Protocol: "
 
-    //Remember sizeof include NUL. In this case I'm not overly concerned with
-    //accidentally using too many bytes, but I wouldn't want anyone to think 
-    //I just forgot about it!
+    //Remember sizeof includes NUL. In this case I'm not overly concerned 
+    //with accidentally using too many bytes, but I wouldn't want anyone to 
+    //think I just forgot about it!
     #define WEBSOCK_HANDSHAKE_RESPONSE_SIZE ( \
         (sizeof(WEBSOCK_UPGRADE_HDR)-1) + \
         (WEBSOCK_SEC_ACCEPT_LEN) + \
@@ -65,6 +65,9 @@
         (sizeof(WEBSOCK_SUBPROTOCOL_HDR)-1) + \
         WEBSOCK_MAX_PROTOCOL_LEN + \
         4) //For CRLF and empty line at end of header
+    
+    //Based on the standard    
+    #define WEBSOCK_MAX_HDR_SIZE 14
 #endif
 
 /////////////////
@@ -94,6 +97,7 @@ MM_ERR(WEBSOCK_OOM, "out of memory");
         WEBSOCK_CONT = 0,
         WEBSOCK_TEXT = 1,
         WEBSOCK_BIN = 2,
+        WEBSOCK_CLOSE = 8,
         WEBSOCK_PING = 9,
         WEBSOCK_PONG = 10
     } websock_pkt_type_t;
@@ -121,7 +125,7 @@ MM_ERR(WEBSOCK_OOM, "out of memory");
         websock_badop,
         websock_badop,
         websock_badop,
-        websock_badop,
+        "WEBSOCK_CLOSE",
         "WEBSOCK_PING",
         "WEBSOCK_PONG",
         websock_badop,
@@ -407,65 +411,6 @@ void to_b64(unsigned char *dst, unsigned char const *src, int len)
 ;
 #endif
 
-//Constructs a standard response to a websocket handshake request. If prot
-//is non-NULL, a Sec-WebSocket-Protocol header is added into the response
-//with the argument given in prot.
-//Returns a pointer to statically-allocated memory; you need to copy it
-//yourself it you want to save it before caling this function again. (Or 
-//just returns NULL on error)
-char *websock_handshake_response(http_req const *req, char const *prot, mm_err *err) 
-#ifdef MM_IMPLEMENT
-{
-    static char buf[WEBSOCK_HANDSHAKE_RESPONSE_SIZE];
-    
-    if (*err != MM_SUCCESS) return NULL;
-    
-    //Sanity check inputs
-    if (req == NULL) {
-        *err = WEBSOCK_NULL_ARG;
-        return NULL;
-    }
-    if (!is_websock_request(req, err)) {
-        *err = WEBSOCK_NOT_WEBSOCKET;
-        return NULL;
-    }
-    if (prot && strlen(prot) > WEBSOCK_MAX_PROTOCOL_LEN) {
-        *err = WEBSOCK_PROT_TOO_LONG;
-        return NULL;
-    }
-    
-    char *key = get_args(req, "Sec-WebSocket-Key", err);
-    unsigned keylen = strcspn(key, ",");
-    unsigned const magiclen = sizeof(WEBSOCK_MAGIC_STRING) - 1; //sizeof includes NUL at end
-    unsigned char *hash_me = alloca(keylen + magiclen); //Stack allocation FTW
-    memcpy(hash_me, key, keylen);
-    memcpy(hash_me + keylen, WEBSOCK_MAGIC_STRING, magiclen);
-    
-    unsigned char result[SHA_DIGEST_LENGTH];
-    SHA1(hash_me, keylen + magiclen, result);
-    
-    unsigned char result_b64[WEBSOCK_SEC_ACCEPT_LEN+1]; //+1 for the NUL
-    to_b64(result_b64, result, SHA_DIGEST_LENGTH);
-    
-    int incr;
-    int pos = 0;
-    sprintf(buf + pos, WEBSOCK_UPGRADE_HDR "%s\r\n%n", result_b64, &incr);
-    pos += incr;
-    
-    if (prot != NULL) {
-        sprintf(buf + pos, WEBSOCK_SUBPROTOCOL_HDR "%s\r\n%n", prot, &incr);
-        pos += incr;
-    }
-    
-    sprintf(buf + pos, "\r\n%n", &incr);
-    pos += incr; //TODO: should I return this length?
-    
-    return buf;
-}
-#else
-;
-#endif
-
 //Same semantics as write_to_http_parser
 int write_to_websock_parser(websock_pkt *pkt, char const *buf, int len, mm_err *err)
 #ifdef MM_IMPLEMENT
@@ -543,6 +488,130 @@ int write_to_websock_parser(websock_pkt *pkt, char const *buf, int len, mm_err *
     }
     
     return 1; //No error, but not done
+}
+#else
+;
+#endif
+
+////////////////////////////////////////////////////
+// Functions for constructing messages to clients //
+////////////////////////////////////////////////////
+
+//Constructs a standard response to a websocket handshake request. If prot
+//is non-NULL, a Sec-WebSocket-Protocol header is added into the response
+//with the argument given in prot.
+//Returns a pointer to statically-allocated memory; you need to copy it
+//yourself it you want to save it before caling this function again. (Or 
+//just returns NULL on error)
+char *websock_handshake_response(http_req const *req, char const *prot, mm_err *err) 
+#ifdef MM_IMPLEMENT
+{
+    static char buf[WEBSOCK_HANDSHAKE_RESPONSE_SIZE];
+    
+    if (*err != MM_SUCCESS) return NULL;
+    
+    //Sanity check inputs
+    if (req == NULL) {
+        *err = WEBSOCK_NULL_ARG;
+        return NULL;
+    }
+    if (!is_websock_request(req, err)) {
+        *err = WEBSOCK_NOT_WEBSOCKET;
+        return NULL;
+    }
+    if (prot && strlen(prot) > WEBSOCK_MAX_PROTOCOL_LEN) {
+        *err = WEBSOCK_PROT_TOO_LONG;
+        return NULL;
+    }
+    
+    char *key = get_args(req, "Sec-WebSocket-Key", err);
+    unsigned keylen = strcspn(key, ",");
+    unsigned const magiclen = sizeof(WEBSOCK_MAGIC_STRING) - 1; //sizeof includes NUL at end
+    unsigned char *hash_me = alloca(keylen + magiclen); //Stack allocation FTW
+    memcpy(hash_me, key, keylen);
+    memcpy(hash_me + keylen, WEBSOCK_MAGIC_STRING, magiclen);
+    
+    unsigned char result[SHA_DIGEST_LENGTH];
+    SHA1(hash_me, keylen + magiclen, result);
+    
+    unsigned char result_b64[WEBSOCK_SEC_ACCEPT_LEN+1]; //+1 for the NUL
+    to_b64(result_b64, result, SHA_DIGEST_LENGTH);
+    
+    int incr;
+    int pos = 0;
+    sprintf(buf + pos, WEBSOCK_UPGRADE_HDR "%s\r\n%n", result_b64, &incr);
+    pos += incr;
+    
+    if (prot != NULL) {
+        sprintf(buf + pos, WEBSOCK_SUBPROTOCOL_HDR "%s\r\n%n", prot, &incr);
+        pos += incr;
+    }
+    
+    sprintf(buf + pos, "\r\n%n", &incr);
+    pos += incr; //TODO: should I return this length?
+    
+    return buf;
+}
+#else
+;
+#endif
+
+//Constructs a websocket header in the array pointed to by dest, which must
+//have at least WEBSOCK_MAX_HDR_SIZE bytes of space. If this is just a 
+//control frame, you can set payload_len to 0 (but control frames that have
+//a payload can feel free to set it to be nonzero). Returns number of bytes
+//written, or negative on error
+int construct_websock_hdr(char *dst, websock_pkt_type_t type, int fin, unsigned long len, mm_err *err)
+#ifdef MM_IMPLEMENT
+{
+    if (*err != MM_SUCCESS) return -1;
+    
+    char *dst_saved = dst; //We'll use this to compute number of bytes written
+    
+    //Sanity check inputs
+    if (!dst) {
+        *err = WEBSOCK_NULL_ARG;
+        return -1;
+    }
+    if (type > 15 || websock_pkt_type_strs[type] == websock_badop || (len>>63)) {
+        *err = WEBSOCK_INVALID_ARG;
+        return -1;
+    }
+    
+    //Write FIN + OPCODE portion
+    *dst++ = (fin ? 0x80 : 0) | type;
+    
+    //Write length portion
+    if (len < 126) {
+        *dst++ = (len & 0xFF);
+    } else if (len < 0xFFFF) {
+        *dst++ = 126;
+        //WARNING WARNING WARNING This assumes the host machine is little endian!
+        char *bytes = (char*)&len;
+        *dst++ = bytes[1];
+        *dst++ = bytes[0];
+    } else {
+        *dst++ = 127;
+        //WARNING WARNING WARNING This assumes the host machine is little endian!
+        char *bytes = (char*)&len;
+        *dst++ = bytes[7];
+        *dst++ = bytes[6];
+        *dst++ = bytes[5];
+        *dst++ = bytes[4];
+        *dst++ = bytes[3];
+        *dst++ = bytes[2];
+        *dst++ = bytes[1];
+        *dst++ = bytes[0];
+    }
+    
+    
+    //Push zero bytes for the mask
+    *dst++ = 0;
+    *dst++ = 0;
+    *dst++ = 0;
+    *dst++ = 0;
+    
+    return dst - dst_saved;
 }
 #else
 ;

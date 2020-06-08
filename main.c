@@ -57,6 +57,17 @@ int main() {
                 for (i = 0; i < pkt->payload_len; i++) {
                     fprintf(stderr, "%02x ", pkt->payload[i] & 0xFF);
                 }
+                
+                if (pkt->type == WEBSOCK_CLOSE) {
+                    //Answer with a close frame
+                    char close_pkt[WEBSOCK_MAX_HDR_SIZE];
+                    int len = construct_websock_hdr(close_pkt, WEBSOCK_CLOSE, 1, 0, &err);
+                    if (err == MM_SUCCESS) {
+                        fwrite(close_pkt, len, 1, stdout);
+                        fflush(stdout);
+                        break;
+                    }
+                }
             }
         } else if (rc < 0) {
             //Error
