@@ -56,7 +56,7 @@ MM_ERR(HTTP_BAD_HDR, "HTTP header has bad syntax");
 MM_ERR(HTTP_CONTENT_LENGTH_UNSPECIFIED, "HTTP Content-Length unspecified");
 MM_ERR(HTTP_CHUNKED_NOT_SUPPORTED, "this server does not support chunked transfers");
 MM_ERR(HTTP_INVALID_CONTENT_LENGTH, "invalid argument for Content-Length");
-MM_ERR(HTTP_STRAGGLERS, "leftover bytes in user buf have been lost");
+MM_ERR(HTTP_STRAGGLERS, "leftover bytes in user buf have been ignored");
 MM_ERR(HTTP_NOT_IMPL, "function not implemented");
 MM_ERR(HTTP_NULL_ARG, "NULL argument given but non-NULL expected");
 MM_ERR(HTTP_INVALID_ARG, "invalid argument");
@@ -153,7 +153,7 @@ MM_ERR(HTTP_IMPOSSIBLE, "HTTP parsing code reached location Marco thought was im
 //Expand memory inside an http_req struct. Makes sure the resulting expanded
 //block is at least min_sz bytes
 //NOTE: does not check if res is non-NULL
-static void expand_mem_to(http_req *res, int min_sz, mm_err *err) {
+static void expand_req_mem_to(http_req *res, int min_sz, mm_err *err) {
     if (*err != MM_SUCCESS) return;
     
     //Quit early if no expansion needed
@@ -419,7 +419,7 @@ static void final_addresses(http_req *res, mm_err *err) {
 /////////////////////////////
 
 //Returns a newly allocated (and initialized) http_req struct. Use 
-//del_http_req to properly free it. Returns NULL on error and sets the error
+//del_http_req to properly free it. Returns NULL and sets *err on error
 http_req *new_http_req(mm_err *err) 
 #ifdef MM_IMPLEMENT
 {
@@ -590,7 +590,7 @@ int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
     if (res->__internal.state == HTTP_STATUS_LINE) reset_http_req(res);
     
     //Make sure there would be enough room for the entire buffer
-    expand_mem_to(res, res->__internal.pos + len, err);
+    expand_req_mem_to(res, res->__internal.pos + len, err);
     if (*err != MM_SUCCESS) return -1;
     
     //Wait... sometimes we're just copying in the payload, so we shouldn't
@@ -624,7 +624,7 @@ int write_to_http_parser(http_req *res, char const *buf, int len, mm_err *err)
             //The line was empty. This means the header is finished
             if (res->__internal.state == HTTP_PAYLOAD) {
                 //Make sure there's enough room for the payload
-                expand_mem_to(res, res->__internal.pos + res->payload_len, err);
+                expand_req_mem_to(res, res->__internal.pos + res->payload_len, err);
                 if (*err != MM_SUCCESS) return -1;
                 
                 //This is our tricky hack of only storing the offset until
