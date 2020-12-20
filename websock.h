@@ -115,7 +115,8 @@ MM_ERR(WEBSOCK_OOM, "out of memory");
     } websock_parse_state_t;
     
 #else
-    char const *const websock_badop = "bad operation";
+    //char const *const websock_badop = "bad operation";
+    #define websock_badop NULL
     char const *const websock_pkt_type_strs[] = {
         "WEBSOCK_CONT",
         "WEBSOCK_TEXT",
@@ -182,6 +183,7 @@ websock_pkt *new_websock_pkt(mm_err *err)
     }
     
     ret->__internal.base = base;
+    ret->__internal.cap = WEBSOCK_INITIAL_SIZE;
     
     reset_websock_pkt(ret);
     
