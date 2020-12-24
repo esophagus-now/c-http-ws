@@ -32,6 +32,7 @@
 #include <endian.h> //UGHHH endianness...
 #include "mm_err.h"
 #include "http_parse.h"
+#include "md5.h"
 
 ////////////////
 // Parameters //
@@ -535,6 +536,11 @@ char *websock_handshake_response(http_req const *req, char const *prot, mm_err *
     
     unsigned char result[SHA_DIGEST_LENGTH];
     SHA1(hash_me, keylen + magiclen, result);
+    //MD5_CTX ctx;
+    //MD5Init(&ctx);
+    //MD5Update(&ctx, hash_me, keylen + magiclen);
+    //MD5Final(result, &ctx);
+    
     
     unsigned char result_b64[WEBSOCK_SEC_ACCEPT_LEN+1]; //+1 for the NUL
     to_b64(result_b64, result, SHA_DIGEST_LENGTH);
